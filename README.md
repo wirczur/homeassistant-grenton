@@ -334,7 +334,8 @@ reduction depends on the number of values and their previous update frequency.
 - A restart is recognised by the CLU **Uptime** sensor going back (boot time = now − uptime).
   When lights come back from *unavailable*, Uptime is read at once, so this takes seconds.
 - Each light of that CLU is set to its last state from **before** the restart; lights already in that
-  state are left alone. A plain network outage (Uptime keeps counting) changes nothing.
+  state are left alone, and so are lights someone switched after the CLU came back.
+  A plain network outage (Uptime keeps counting) changes nothing.
 - Uploading a new configuration from Object Manager also restarts the CLU, so lights are restored then too.
 - Lights over Gate HTTP are not covered (no Uptime). Diagnostics show the saved history and boot times.
 
@@ -909,6 +910,10 @@ Configure sliders with appropriate device classes for proper representation:
 4. Check Grenton device is responding to queries
 
 ## 📋 Changelog
+
+### 0.5.1
+- Restoring lights: no false "restart" on reload when the last Uptime value is old (long poll interval)
+- Restoring lights: a light switched by someone right after the CLU came back is left as it is
 
 ### 0.5.0
 - Restore lights after a CLU restart (opt-in in **Configure**, with exclusions); restart detected from Uptime, history kept across HA restarts
