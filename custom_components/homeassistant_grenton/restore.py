@@ -130,7 +130,8 @@ class LightRestoreManager:
         await self._store.async_save(self._data)
 
     # ------------------------------------------------------------ recording
-    def _record(self, entity_id: str, state: Any) -> None:
+    def _record(self, entity_id: str, state: Any, manual: bool = False) -> None:
+        """Save a light state; manual = switched while online (user or automation)."""
         snap = _snapshot(state)
         if snap is None:
             return
@@ -138,7 +139,10 @@ class LightRestoreManager:
         history: list[dict[str, Any]] = self._data["lights"].setdefault(uid, [])
         if history and _same(history[-1]["state"], snap):
             return
-        history.append({"ts": dt_util.utcnow().isoformat(), "state": snap})
+        record: dict[str, Any] = {"ts": dt_util.utcnow().isoformat(), "state": snap}
+        if manual:
+            record["manual"] = True
+        history.append(record)
         del history[:-HISTORY_PER_LIGHT]
         self._store.async_delay_save(lambda: self._data, SAVE_DELAY)
 
@@ -146,7 +150,10 @@ class LightRestoreManager:
     def _on_light_change(self, event: Event[EventStateChangedData]) -> None:
         entity_id = event.data["entity_id"]
         old, new = event.data["old_state"], event.data["new_state"]
-        self._record(entity_id, new)
+        # on <-> off while online is someone's decision; a value after
+        # "unavailable" is what the CLU reports when it comes back
+        online = old is not None and old.state in (STATE_ON, STATE_OFF)
+        self._record(entity_id, new, manual=online)
         if old is not None and old.state == STATE_UNAVAILABLE and new is not None and new.state != STATE_UNAVAILABLE:
             # Back online: read Uptime now instead of waiting for the slow-read timer
             self._request_uptime(self._light_clu[entity_id])
@@ -180,7 +187,9 @@ class LightRestoreManager:
             uptime = float(state.state)
         except (TypeError, ValueError):
             return
-        boot = dt_util.utcnow() - timedelta(seconds=uptime)
+        # Measured from when the value was read, not from now: on a reload
+        # the last Uptime can be minutes old and would look like a restart.
+        boot = state.last_updated - timedelta(seconds=uptime)
         stored = self._data["boot"].get(clu_id)
         previous = dt_util.parse_datetime(stored) if stored else None
         if previous is not None and abs(boot - previous) <= BOOT_TOLERANCE:
@@ -198,6 +207,9 @@ class LightRestoreManager:
             history = self._data["lights"].get(self._light_uid[entity_id], [])
             before = [h for h in history if dt_util.parse_datetime(h["ts"]) < boot]
             if not before:
+                continue
+            if any(h.get("manual") for h in history if dt_util.parse_datetime(h["ts"]) >= boot):
+                _LOGGER.debug("[%s] %s changed after the restart; not restoring", clu_id, entity_id)
                 continue
             target = before[-1]["state"]
             current = _snapshot(self.hass.states.get(entity_id))

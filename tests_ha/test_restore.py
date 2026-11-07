@@ -135,3 +135,52 @@ async def test_options_step_and_setup(hass: HomeAssistant):
         assert manager is not None
         assert list(manager._light_clu.values()) == ["CLU221000001"]
         assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_stale_uptime_on_reload_is_not_a_restart(hass: HomeAssistant, freezer: FrozenDateTimeFactory):
+    """Uptime read minutes ago (long poll interval) must not look like a restart on reload."""
+    on = async_mock_service(hass, "light", "turn_on")
+    off = async_mock_service(hass, "light", "turn_off")
+    hass.states.async_set("sensor.clu_uptime", "60")       # CLU started a minute ago
+    hass.states.async_set("light.salon", "on", {"brightness": 200})
+    manager, _ = await _manager(hass)
+    await manager.async_start()
+    entry = manager.entry
+    freezer.tick(timedelta(seconds=60))
+    hass.states.async_set("light.salon", "off")
+    freezer.tick(timedelta(seconds=210))
+    hass.states.async_set("light.salon", "on", {"brightness": 200})
+    await hass.async_block_till_done()
+    await manager.async_stop()
+
+    freezer.tick(timedelta(seconds=30))  # reload; Uptime still shows "60" from 5 minutes ago
+    manager, _ = await _manager(hass, entry=entry)
+    await manager.async_start()
+    await hass.async_block_till_done()
+    assert on == [] and off == []
+    await manager.async_stop()
+
+
+async def test_light_switched_after_restart_is_left_alone(hass: HomeAssistant, freezer: FrozenDateTimeFactory):
+    on = async_mock_service(hass, "light", "turn_on")
+    off = async_mock_service(hass, "light", "turn_off")
+    hass.states.async_set("sensor.clu_uptime", "5000")
+    hass.states.async_set("light.salon", "off")
+    hass.states.async_set("light.kuchnia", "on", {"brightness": 100})
+    manager, _ = await _manager(hass)
+    await manager.async_start()
+
+    freezer.tick(timedelta(minutes=10))
+    for entity_id in ("light.salon", "light.kuchnia"):
+        hass.states.async_set(entity_id, "unavailable")
+    freezer.tick(timedelta(seconds=30))
+    hass.states.async_set("light.salon", "off")
+    hass.states.async_set("light.kuchnia", "off")
+    freezer.tick(timedelta(seconds=1))
+    hass.states.async_set("light.salon", "on", {"brightness": 255})  # someone switches it on
+    hass.states.async_set("sensor.clu_uptime", "35")
+    await hass.async_block_till_done()
+
+    assert off == []                                          # salon: user's choice kept
+    assert [c.data["entity_id"] for c in on] == ["light.kuchnia"]
+    await manager.async_stop()
